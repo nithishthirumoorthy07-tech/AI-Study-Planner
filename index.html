@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Study Planner — Smart Dashboard for Students</title>
+    <meta
+      name="description"
+      content="A premium offline study planner: subjects, tasks, AI-simulated scheduling, calendar, analytics and a Pomodoro timer. Runs entirely in your browser."
+    />
+    <meta name="author" content="AI Study Planner" />
+    <meta name="theme-color" content="#0b1020" />
+    <meta property="og:title" content="AI Study Planner — Smart Dashboard for Students" />
+    <meta
+      property="og:description"
+      content="Plan smarter: intelligent task ordering, deadline tracking, analytics and Pomodoro focus sessions. No login, no backend."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="assets/favicon.ico" type="image/x-icon" />
+    <link rel="apple-touch-icon" href="assets/logo.png" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Manrope:wght@400;500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!-- ============================ LOADING SCREEN ============================ -->
+    <div id="loader" class="loader" role="status" aria-live="polite" aria-label="Loading application">
+      <div class="loader__ring"></div>
+      <p class="loader__text">Preparing your study space…</p>
+    </div>
+
+    <a class="skip-link" href="#main">Skip to main content</a>
+
+    <!-- ================================ SVG SPRITE ============================ -->
+    <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="i-dashboard" viewBox="0 0 24 24"><path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z"/></symbol>
+      <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 4a2 2 0 0 1 2-2h13v18H6a2 2 0 0 0-2 2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8 6h7M8 10h7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 2l2.2 5.8L20 10l-5.8 2.2L12 18l-2.2-5.8L4 10l5.8-2.2z" fill="currentColor"/><circle cx="19" cy="19" r="2" fill="currentColor"/></symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 10h18M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-timer" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9v4l3 2M9 2h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 6l4 4" stroke="currentColor" stroke-width="1.8"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" fill="currentColor"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+      <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 2s5 4.5 5 9a5 5 0 0 1-10 0c0-1.5.7-2.8 1.5-3.8C9 9.5 9.5 11 11 11c0-3 1-6.5 1-9z" fill="currentColor"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5.3l3.4 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    </svg>
+
+    <!-- ================================ HEADER ================================ -->
+    <header class="topbar glass">
+      <button
+        class="icon-btn nav-toggle"
+        id="navToggle"
+        aria-label="Toggle navigation menu"
+        aria-expanded="false"
+        aria-controls="primaryNav"
+      >
+        <svg class="icon" aria-hidden="true"><use href="#i-menu" /></svg>
+      </button>
+
+      <a class="brand" href="#dashboard" aria-label="AI Study Planner home">
+        <img src="assets/logo.png" alt="" class="brand__logo" width="34" height="34" />
+        <span class="brand__text">AI Study<span class="brand__accent">Planner</span></span>
+      </a>
+
+      <nav class="nav" id="primaryNav" aria-label="Primary">
+        <button class="nav__link is-active" data-view="dashboard"><svg class="icon" aria-hidden="true"><use href="#i-dashboard"/></svg><span>Dashboard</span></button>
+        <button class="nav__link" data-view="subjects"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg><span>Subjects</span></button>
+        <button class="nav__link" data-view="tasks"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Tasks</span></button>
+        <button class="nav__link" data-view="planner"><svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg><span>AI Planner</span></button>
+        <button class="nav__link" data-view="calendar"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg><span>Calendar</span></button>
+        <button class="nav__link" data-view="analytics"><svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg><span>Analytics</span></button>
+        <button class="nav__link" data-view="focus"><svg class="icon" aria-hidden="true"><use href="#i-timer"/></svg><span>Focus</span></button>
+        <button class="nav__link" data-view="settings"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>Settings</span></button>
+      </nav>
+
+      <div class="topbar__actions">
+        <button class="icon-btn" id="themeToggle" aria-label="Toggle dark and light mode" title="Toggle theme (T)">
+          <svg class="icon icon--sun" aria-hidden="true"><use href="#i-sun" /></svg>
+          <svg class="icon icon--moon" aria-hidden="true"><use href="#i-moon" /></svg>
+        </button>
+        <button class="btn btn--primary" id="quickAddTask" title="New task (N)">
+          <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+          <span>New task</span>
+        </button>
+      </div>
+    </header>
+    <div class="nav-scrim" id="navScrim" hidden></div>
+
+    <!-- ================================= MAIN ================================= -->
+    <main id="main" class="main">
+      <!-- ------------------------------ DASHBOARD ---------------------------- -->
+      <section class="view is-active" id="view-dashboard" aria-labelledby="dashTitle">
+        <div class="hero glass card--animate">
+          <div class="hero__left">
+            <p class="hero__eyebrow" id="liveDate">—</p>
+            <h1 class="hero__title" id="dashTitle"><span id="greeting">Hello</span>, Scholar 👋</h1>
+            <p class="hero__sub" id="dailyQuote">Loading today's inspiration…</p>
+          </div>
+          <div class="hero__right">
+            <div class="clock" id="liveClock" aria-label="Current time">--:--:--</div>
+            <div class="ring" role="img" aria-labelledby="ringLabel">
+              <svg viewBox="0 0 120 120" class="ring__svg">
+                <circle class="ring__track" cx="60" cy="60" r="52" />
+                <circle class="ring__value" id="progressRing" cx="60" cy="60" r="52" />
+              </svg>
+              <div class="ring__center">
+                <strong id="progressPct">0%</strong>
+                <span id="ringLabel">complete</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stat-grid">
+          <article class="stat glass card--animate"><span class="stat__label">Total tasks</span><strong class="stat__value" id="statTotal">0</strong></article>
+          <article class="stat glass card--animate"><span class="stat__label">Completed</span><strong class="stat__value" id="statDone">0</strong></article>
+          <article class="stat glass card--animate"><span class="stat__label">Pending</span><strong class="stat__value" id="statPending">0</strong></article>
+          <article class="stat glass card--animate stat--warn"><span class="stat__label">Overdue</span><strong class="stat__value" id="statOverdue">0</strong></article>
+          <article class="stat glass card--animate"><span class="stat__label">Streak</span><strong class="stat__value"><svg class="icon icon--flame" aria-hidden="true"><use href="#i-flame"/></svg> <span id="statStreak">0</span></strong></article>
+        </div>
+
+        <div class="grid-2">
+          <section class="panel glass card--animate" aria-labelledby="todayHead">
+            <header class="panel__head">
+              <h2 id="todayHead">Today's tasks</h2>
+              <span class="pill" id="todayCount">0</span>
+            </header>
+            <ul class="task-list" id="todayList"></ul>
+          </section>
+
+          <section class="panel glass card--animate" aria-labelledby="deadHead">
+            <header class="panel__head">
+              <h2 id="deadHead">Upcoming deadlines</h2>
+              <span class="pill" id="deadlineCount">0</span>
+            </header>
+            <ul class="deadline-list" id="deadlineList"></ul>
+          </section>
+        </div>
+
+        <section class="panel glass card--animate" aria-labelledby="qaHead">
+          <header class="panel__head"><h2 id="qaHead">Quick actions</h2></header>
+          <div class="quick-actions">
+            <button class="qa" data-action="add-task"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>Add task</button>
+            <button class="qa" data-action="add-subject"><svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>Add subject</button>
+            <button class="qa" data-action="generate-plan"><svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg>Generate plan</button>
+            <button class="qa" data-action="start-pomodoro"><svg class="icon" aria-hidden="true"><use href="#i-timer"/></svg>Start Pomodoro</button>
+            <button class="qa" data-action="view-analytics"><svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg>Analytics</button>
+            <button class="qa" data-action="export"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>Export data</button>
+          </div>
+        </section>
+      </section>
+
+      <!-- ------------------------------- SUBJECTS ---------------------------- -->
+      <section class="view" id="view-subjects" aria-labelledby="subjHead">
+        <header class="view__head">
+          <div>
+            <h1 id="subjHead">Subjects</h1>
+            <p class="view__sub">Group your workload and give every subject its own colour.</p>
+          </div>
+          <div class="view__tools">
+            <div class="field field--search">
+              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+              <input type="search" id="subjectSearch" placeholder="Search subjects" aria-label="Search subjects" />
+            </div>
+            <button class="btn btn--primary" id="addSubjectBtn"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Add subject</span></button>
+          </div>
+        </header>
+        <div class="subject-grid" id="subjectGrid"></div>
+      </section>
+
+      <!-- --------------------------------- TASKS ----------------------------- -->
+      <section class="view" id="view-tasks" aria-labelledby="taskHead">
+        <header class="view__head">
+          <div>
+            <h1 id="taskHead">Tasks</h1>
+            <p class="view__sub">Search, filter and sort everything on your plate.</p>
+          </div>
+          <div class="view__tools">
+            <div class="field field--search">
+              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+              <input type="search" id="taskSearch" placeholder="Search tasks" aria-label="Search tasks" />
+            </div>
+            <button class="btn btn--primary" id="addTaskBtn"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Add task</span></button>
+          </div>
+        </header>
+
+        <div class="filters glass">
+          <label class="field"><span>Subject</span><select id="filterSubject" aria-label="Filter by subject"><option value="all">All subjects</option></select></label>
+          <label class="field"><span>Status</span><select id="filterStatus" aria-label="Filter by status">
+            <option value="all">All</option><option value="pending">Pending</option><option value="completed">Completed</option><option value="overdue">Overdue</option>
+          </select></label>
+          <label class="field"><span>Priority</span><select id="filterPriority" aria-label="Filter by priority">
+            <option value="all">All</option><option value="High">High</option><option value="Medium">Medium</option><option value="Low">Low</option>
+          </select></label>
+          <label class="field"><span>Sort by</span><select id="sortBy" aria-label="Sort tasks">
+            <option value="deadline">Deadline</option><option value="priority">Priority</option><option value="title">Title</option><option value="created">Recently added</option><option value="duration">Study time</option>
+          </select></label>
+        </div>
+
+        <ul class="task-list task-list--full" id="taskList"></ul>
+      </section>
+
+      <!-- ------------------------------ AI PLANNER --------------------------- -->
+      <section class="view" id="view-planner" aria-labelledby="planHead">
+        <header class="view__head">
+          <div>
+            <h1 id="planHead">AI Planner</h1>
+            <p class="view__sub">A rule-based scheduling engine that scores urgency, priority and effort — fully offline.</p>
+          </div>
+          <button class="btn btn--primary" id="regeneratePlan"><svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg><span>Regenerate plan</span></button>
+        </header>
+
+        <div class="grid-2">
+          <section class="panel glass" aria-labelledby="schedHead">
+            <header class="panel__head"><h2 id="schedHead">Today's study schedule</h2><span class="pill" id="planLoad">0h</span></header>
+            <ol class="schedule" id="scheduleList"></ol>
+          </section>
+          <div class="stack">
+            <section class="panel glass" aria-labelledby="pomoSuggestHead">
+              <header class="panel__head"><h2 id="pomoSuggestHead">Suggested Pomodoro sessions</h2></header>
+              <div id="pomodoroSuggestions" class="pomo-suggest"></div>
+            </section>
+            <section class="panel glass panel--tip" aria-labelledby="tipHead">
+              <header class="panel__head"><h2 id="tipHead">Coach tips</h2></header>
+              <ul class="tips" id="planTips"></ul>
+            </section>
+          </div>
+        </div>
+
+        <section class="panel glass" aria-labelledby="rankHead">
+          <header class="panel__head"><h2 id="rankHead">Smart priority queue</h2></header>
+          <ul class="task-list" id="rankedList"></ul>
+        </section>
+      </section>
+
+      <!-- -------------------------------- CALENDAR --------------------------- -->
+      <section class="view" id="view-calendar" aria-labelledby="calHead">
+        <header class="view__head">
+          <div>
+            <h1 id="calHead">Calendar</h1>
+            <p class="view__sub">Deadlines at a glance across the month.</p>
+          </div>
+          <div class="cal-nav">
+            <button class="icon-btn" id="calPrev" aria-label="Previous month">‹</button>
+            <strong id="calLabel">—</strong>
+            <button class="icon-btn" id="calNext" aria-label="Next month">›</button>
+            <button class="btn btn--ghost" id="calToday">Today</button>
+          </div>
+        </header>
+        <div class="panel glass">
+          <div class="cal-grid cal-grid--head" aria-hidden="true">
+            <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+          </div>
+          <div class="cal-grid" id="calGrid" role="grid" aria-label="Month calendar"></div>
+        </div>
+        <section class="panel glass" aria-labelledby="dayHead">
+          <header class="panel__head"><h2 id="dayHead">Selected day</h2><span class="pill" id="dayLabel">—</span></header>
+          <ul class="task-list" id="dayTasks"></ul>
+        </section>
+      </section>
+
+      <!-- ------------------------------- ANALYTICS --------------------------- -->
+      <section class="view" id="view-analytics" aria-labelledby="anaHead">
+        <header class="view__head">
+          <div>
+            <h1 id="anaHead">Progress analytics</h1>
+            <p class="view__sub">Track completion, subject balance and weekly study hours.</p>
+          </div>
+        </header>
+
+        <div class="stat-grid">
+          <article class="stat glass"><span class="stat__label">Completion</span><strong class="stat__value" id="anaPct">0%</strong></article>
+          <article class="stat glass"><span class="stat__label">Completed</span><strong class="stat__value" id="anaDone">0</strong></article>
+          <article class="stat glass"><span class="stat__label">Pending</span><strong class="stat__value" id="anaPending">0</strong></article>
+          <article class="stat glass"><span class="stat__label">Planned hours</span><strong class="stat__value" id="anaHours">0</strong></article>
+        </div>
+
+        <div class="grid-2">
+          <section class="panel glass" aria-labelledby="chartHead">
+            <header class="panel__head"><h2 id="chartHead">Weekly study hours</h2><span class="pill" id="weekTotal">0h</span></header>
+            <canvas id="weekChart" width="640" height="280" role="img" aria-label="Bar chart of study hours completed each day this week"></canvas>
+          </section>
+          <section class="panel glass" aria-labelledby="subjProgHead">
+            <header class="panel__head"><h2 id="subjProgHead">Subject progress</h2></header>
+            <div class="subject-progress" id="subjectProgress"></div>
+          </section>
+        </div>
+      </section>
+
+      <!-- --------------------------------- FOCUS ----------------------------- -->
+      <section class="view" id="view-focus" aria-labelledby="focusHead">
+        <header class="view__head">
+          <div>
+            <h1 id="focusHead">Productivity</h1>
+            <p class="view__sub">Pomodoro sessions, live countdowns and daily goals.</p>
+          </div>
+        </header>
+
+        <div class="grid-2">
+          <section class="panel glass pomodoro" aria-labelledby="pomoHead">
+            <header class="panel__head"><h2 id="pomoHead">Pomodoro timer</h2><span class="pill" id="pomoMode">Focus</span></header>
+            <div class="pomodoro__dial">
+              <svg viewBox="0 0 200 200" class="pomodoro__svg" aria-hidden="true">
+                <circle class="ring__track" cx="100" cy="100" r="88" />
+                <circle class="ring__value" id="pomoRing" cx="100" cy="100" r="88" />
+              </svg>
+              <div class="pomodoro__time" id="pomoTime" role="timer" aria-live="off">25:00</div>
+            </div>
+            <div class="pomodoro__controls">
+              <button class="btn btn--primary" id="pomoStart">Start</button>
+              <button class="btn btn--ghost" id="pomoPause">Pause</button>
+              <button class="btn btn--ghost" id="pomoReset">Reset</button>
+            </div>
+            <p class="pomodoro__meta">Completed sessions today: <strong id="pomoCount">0</strong></p>
+          </section>
+
+          <div class="stack">
+            <section class="panel glass" aria-labelledby="cdHead">
+              <header class="panel__head"><h2 id="cdHead">Deadline countdown</h2></header>
+              <div id="countdowns" class="countdowns"></div>
+            </section>
+            <section class="panel glass" aria-labelledby="goalHead">
+              <header class="panel__head"><h2 id="goalHead">Daily goals</h2></header>
+              <form class="goal-form" id="goalForm">
+                <label class="field"><span>Tasks to complete today</span><input type="number" id="goalTasks" min="1" max="20" value="3" /></label>
+                <label class="field"><span>Study hours target</span><input type="number" id="goalHours" min="1" max="16" step="0.5" value="3" /></label>
+                <button class="btn btn--primary" type="submit">Save goals</button>
+              </form>
+              <div class="goal-progress" id="goalProgress"></div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <!-- -------------------------------- SETTINGS --------------------------- -->
+      <section class="view" id="view-settings" aria-labelledby="setHead">
+        <header class="view__head">
+          <div>
+            <h1 id="setHead">Settings</h1>
+            <p class="view__sub">Appearance, backups and data control. Everything lives in your browser.</p>
+          </div>
+        </header>
+
+        <div class="grid-2">
+          <section class="panel glass" aria-labelledby="apHead">
+            <header class="panel__head"><h2 id="apHead">Appearance</h2></header>
+            <div class="theme-choice" role="radiogroup" aria-label="Colour theme">
+              <button class="theme-opt" data-theme-set="light" role="radio" aria-checked="false"><svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg> Light</button>
+              <button class="theme-opt" data-theme-set="dark" role="radio" aria-checked="true"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg> Dark</button>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="motionToggle" />
+              <span>Reduce animations</span>
+            </label>
+          </section>
+
+          <section class="panel glass" aria-labelledby="dataHead">
+            <header class="panel__head"><h2 id="dataHead">Your data</h2></header>
+            <p class="muted">Back up your planner as JSON or restore it on another device.</p>
+            <div class="btn-row">
+              <button class="btn btn--primary" id="exportBtn">Export JSON</button>
+              <button class="btn btn--ghost" id="importBtn">Import JSON</button>
+              <input type="file" id="importFile" accept="application/json,.json" hidden />
+              <button class="btn btn--danger" id="clearBtn">Clear all data</button>
+            </div>
+            <dl class="kv">
+              <div><dt>Subjects</dt><dd id="metaSubjects">0</dd></div>
+              <div><dt>Tasks</dt><dd id="metaTasks">0</dd></div>
+              <div><dt>Storage</dt><dd id="metaSize">0 KB</dd></div>
+            </dl>
+          </section>
+        </div>
+
+        <section class="panel glass" aria-labelledby="ksHead">
+          <header class="panel__head"><h2 id="ksHead">Keyboard shortcuts</h2></header>
+          <ul class="shortcuts">
+            <li><kbd>N</kbd> New task</li>
+            <li><kbd>S</kbd> New subject</li>
+            <li><kbd>/</kbd> Focus search</li>
+            <li><kbd>T</kbd> Toggle theme</li>
+            <li><kbd>G</kbd> Generate plan</li>
+            <li><kbd>P</kbd> Start / pause Pomodoro</li>
+            <li><kbd>Esc</kbd> Close dialog</li>
+          </ul>
+        </section>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>Built with HTML, CSS and vanilla JavaScript · Data stored locally in your browser · MIT Licensed</p>
+    </footer>
+
+    <!-- ================================ MODALS ================================ -->
+    <div class="modal" id="taskModal" role="dialog" aria-modal="true" aria-labelledby="taskModalTitle" hidden>
+      <div class="modal__panel glass">
+        <header class="modal__head">
+          <h2 id="taskModalTitle">New task</h2>
+          <button class="icon-btn" data-close aria-label="Close dialog"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        </header>
+        <form id="taskForm" class="form" novalidate>
+          <input type="hidden" id="taskId" />
+          <label class="field"><span>Title *</span><input type="text" id="taskTitle" required maxlength="90" placeholder="Revise linear algebra chapter 4" /><small class="err" data-err="taskTitle"></small></label>
+          <label class="field"><span>Subject *</span><select id="taskSubject" required></select><small class="err" data-err="taskSubject"></small></label>
+          <label class="field"><span>Description</span><textarea id="taskDesc" rows="3" maxlength="400" placeholder="Notes, resources, page numbers…"></textarea></label>
+          <div class="form-row">
+            <label class="field"><span>Deadline *</span><input type="date" id="taskDeadline" required /><small class="err" data-err="taskDeadline"></small></label>
+            <label class="field"><span>Priority</span><select id="taskPriority"><option>High</option><option selected>Medium</option><option>Low</option></select></label>
+            <label class="field"><span>Est. hours</span><input type="number" id="taskHours" min="0.5" max="12" step="0.5" value="1" /></label>
+          </div>
+          <label class="switch"><input type="checkbox" id="taskDone" /><span>Mark as completed</span></label>
+          <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" data-close>Cancel</button>
+            <button type="submit" class="btn btn--primary">Save task</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="modal" id="subjectModal" role="dialog" aria-modal="true" aria-labelledby="subjectModalTitle" hidden>
+      <div class="modal__panel glass">
+        <header class="modal__head">
+          <h2 id="subjectModalTitle">New subject</h2>
+          <button class="icon-btn" data-close aria-label="Close dialog"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        </header>
+        <form id="subjectForm" class="form" novalidate>
+          <input type="hidden" id="subjectId" />
+          <label class="field"><span>Name *</span><input type="text" id="subjectName" required maxlength="50" placeholder="Data Structures" /><small class="err" data-err="subjectName"></small></label>
+          <label class="field"><span>Description</span><input type="text" id="subjectDesc" maxlength="120" placeholder="Semester 4 core paper" /></label>
+          <fieldset class="field">
+            <legend>Colour</legend>
+            <div class="swatches" id="colorSwatches"></div>
+          </fieldset>
+          <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" data-close>Cancel</button>
+            <button type="submit" class="btn btn--primary">Save subject</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="modal" id="confirmModal" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" hidden>
+      <div class="modal__panel modal__panel--sm glass">
+        <header class="modal__head"><h2 id="confirmTitle">Are you sure?</h2></header>
+        <p class="muted" id="confirmText">This action cannot be undone.</p>
+        <div class="modal__foot">
+          <button class="btn btn--ghost" data-close>Cancel</button>
+          <button class="btn btn--danger" id="confirmOk">Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toasts" id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
+
+    <script src="script.js" defer></script>
+  </body>
+</html>
