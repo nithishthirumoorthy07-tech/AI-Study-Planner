@@ -1,0 +1,1346 @@
+/* =========================================================================
+   AI Study Planner — script.js
+   Vanilla ES6, no dependencies. Architecture:
+     Store      -> LocalStorage persistence + schema versioning
+     Subjects   -> subject CRUD
+     Tasks      -> task CRUD, search / filter / sort
+     Planner    -> rule-based "AI" scheduling engine
+     Calendar   -> month grid rendering
+     Analytics  -> stats + canvas chart
+     Focus      -> Pomodoro, countdowns, daily goals
+     Settings   -> theme, export / import / reset
+     UI         -> routing, modals, toasts, shortcuts, rendering glue
+   ========================================================================= */
+(function () {
+  "use strict";
+
+  /* ======================================================================
+     0. UTILITIES
+     ====================================================================== */
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  /** Escape user text before injecting into innerHTML. */
+  const esc = (str) =>
+    String(str == null ? "" : str).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    })[c]);
+
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+  /** Local (not UTC) YYYY-MM-DD key for a Date. */
+  const dateKey = (d) => {
+    const x = new Date(d);
+    return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+  };
+
+  const todayKey = () => dateKey(new Date());
+
+  /** Whole-day difference between two YYYY-MM-DD keys (b - a). */
+  const daysBetween = (aKey, bKey) => {
+    const a = new Date(`${aKey}T00:00:00`);
+    const b = new Date(`${bKey}T00:00:00`);
+    return Math.round((b - a) / 86400000);
+  };
+
+  const fmtDate = (key) =>
+    new Date(`${key}T00:00:00`).toLocaleDateString(undefined, {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+    });
+
+  const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
+
+  const debounce = (fn, wait = 200) => {
+    let t;
+    return (...args) => {
+      clearTimeout(t);
+      t = setTimeout(() => fn(...args), wait);
+    };
+  };
+
+  const PRIORITY_WEIGHT = { High: 3, Medium: 2, Low: 1 };
+
+  const PALETTE = [
+    "#7c5cff", "#22d3ee", "#f472b6", "#34d399",
+    "#fbbf24", "#fb7185", "#60a5fa", "#a3e635",
+  ];
+
+  const QUOTES = [
+    "Small daily improvements are the key to staggering long-term results.",
+    "Discipline is choosing between what you want now and what you want most.",
+    "You don't have to be extreme, just consistent.",
+    "The expert in anything was once a beginner who refused to quit.",
+    "Focus is saying no to a hundred good ideas.",
+    "Study while others sleep; work while others loaf.",
+    "Progress, not perfection, compounds.",
+  ];
+
+  const TIP_POOL = [
+    "Start with the hardest task while your focus is freshest.",
+    "Batch similar subjects together to reduce context switching.",
+    "Take a real 5-minute break — screens don't count as rest.",
+    "Review yesterday's notes for 5 minutes before starting new material.",
+    "Write down one sentence about what you learned after each session.",
+    "Hydrate and stand up between Pomodoros; your brain runs on blood flow.",
+  ];
+
+  /* ======================================================================
+     1. STORE — LocalStorage persistence
+     ====================================================================== */
+  const Store = (() => {
+    const KEY = "aiStudyPlanner.v1";
+
+    const defaults = () => ({
+      version: 1,
+      subjects: [],
+      tasks: [],
+      settings: { theme: "dark", reducedMotion: false },
+      goals: { tasks: 3, hours: 3 },
+      pomodoro: { date: todayKey(), count: 0 },
+      streak: { current: 0, lastDay: null },
+      history: {}, // { 'YYYY-MM-DD': hoursCompleted }
+      seeded: false,
+    });
+
+    let state = defaults();
+
+    function load() {
+      try {
+        const raw = localStorage.getItem(KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") {
+          state = Object.assign(defaults(), parsed);
+          state.settings = Object.assign(defaults().settings, parsed.settings || {});
+          state.goals = Object.assign(defaults().goals, parsed.goals || {});
+          state.pomodoro = Object.assign(defaults().pomodoro, parsed.pomodoro || {});
+          state.streak = Object.assign(defaults().streak, parsed.streak || {});
+          state.history = parsed.history || {};
+        }
+      } catch (err) {
+        console.error("Failed to read saved data:", err);
+        UI.toast("Saved data was corrupted — starting fresh.", "error");
+        state = defaults();
+      }
+    }
+
+    function save() {
+      try {
+        localStorage.setItem(KEY, JSON.stringify(state));
+      } catch (err) {
+        console.error("Failed to save:", err);
+        UI.toast("Could not save — storage may be full.", "error");
+      }
+    }
+
+    return {
+      load,
+      save,
+      get state() { return state; },
+      replace(next) { state = Object.assign(defaults(), next); save(); },
+      reset() { state = defaults(); save(); },
+      bytes() {
+        try { return (localStorage.getItem(KEY) || "").length; } catch { return 0; }
+      },
+    };
+  })();
+
+  /* ======================================================================
+     2. SUBJECTS
+     ====================================================================== */
+  const Subjects = {
+    all() { return Store.state.subjects; },
+    byId(id) { return Store.state.subjects.find((s) => s.id === id) || null; },
+    nextColor() {
+      const used = Store.state.subjects.map((s) => s.color);
+      return PALETTE.find((c) => !used.includes(c)) || PALETTE[used.length % PALETTE.length];
+    },
+    create({ name, description, color }) {
+      const subject = {
+        id: uid(),
+        name: name.trim(),
+        description: (description || "").trim(),
+        color: color || this.nextColor(),
+        createdAt: Date.now(),
+      };
+      Store.state.subjects.push(subject);
+      Store.save();
+      return subject;
+    },
+    update(id, patch) {
+      const s = this.byId(id);
+      if (!s) return null;
+      Object.assign(s, patch);
+      Store.save();
+      return s;
+    },
+    remove(id) {
+      Store.state.subjects = Store.state.subjects.filter((s) => s.id !== id);
+      // Cascade: drop tasks that belonged to the subject.
+      Store.state.tasks = Store.state.tasks.filter((t) => t.subjectId !== id);
+      Store.save();
+    },
+    search(term) {
+      const q = (term || "").trim().toLowerCase();
+      if (!q) return this.all();
+      return this.all().filter(
+        (s) => s.name.toLowerCase().includes(q) || (s.description || "").toLowerCase().includes(q)
+      );
+    },
+    stats(id) {
+      const tasks = Tasks.all().filter((t) => t.subjectId === id);
+      const done = tasks.filter((t) => t.completed).length;
+      return {
+        total: tasks.length,
+        done,
+        pct: tasks.length ? Math.round((done / tasks.length) * 100) : 0,
+        hours: tasks.reduce((sum, t) => sum + Number(t.hours || 0), 0),
+      };
+    },
+  };
+
+  /* ======================================================================
+     3. TASKS
+     ====================================================================== */
+  const Tasks = {
+    all() { return Store.state.tasks; },
+    byId(id) { return Store.state.tasks.find((t) => t.id === id) || null; },
+    create(data) {
+      const task = {
+        id: uid(),
+        subjectId: data.subjectId,
+        title: data.title.trim(),
+        description: (data.description || "").trim(),
+        deadline: data.deadline,
+        priority: data.priority || "Medium",
+        hours: Number(data.hours) || 1,
+        completed: !!data.completed,
+        createdAt: Date.now(),
+        completedAt: data.completed ? Date.now() : null,
+      };
+      Store.state.tasks.push(task);
+      Store.save();
+      return task;
+    },
+    update(id, patch) {
+      const t = this.byId(id);
+      if (!t) return null;
+      const wasDone = t.completed;
+      Object.assign(t, patch);
+      if (!wasDone && t.completed) this.registerCompletion(t);
+      if (wasDone && !t.completed) t.completedAt = null;
+      Store.save();
+      return t;
+    },
+    remove(id) {
+      Store.state.tasks = Store.state.tasks.filter((t) => t.id !== id);
+      Store.save();
+    },
+    toggle(id) {
+      const t = this.byId(id);
+      if (!t) return null;
+      t.completed = !t.completed;
+      if (t.completed) this.registerCompletion(t);
+      else t.completedAt = null;
+      Store.save();
+      return t;
+    },
+    /** Record completion time, study history and daily streak. */
+    registerCompletion(task) {
+      task.completedAt = Date.now();
+      const key = todayKey();
+      const hist = Store.state.history;
+      hist[key] = Math.round(((hist[key] || 0) + Number(task.hours || 0)) * 100) / 100;
+
+      const streak = Store.state.streak;
+      if (streak.lastDay !== key) {
+        const gap = streak.lastDay ? daysBetween(streak.lastDay, key) : null;
+        streak.current = gap === 1 ? streak.current + 1 : 1;
+        streak.lastDay = key;
+      }
+    },
+    isOverdue(t) { return !t.completed && daysBetween(todayKey(), t.deadline) < 0; },
+    isToday(t) { return t.deadline === todayKey(); },
+    query({ search = "", subject = "all", status = "all", priority = "all", sort = "deadline" } = {}) {
+      const q = search.trim().toLowerCase();
+      let list = this.all().filter((t) => {
+        if (q && !(t.title.toLowerCase().includes(q) || (t.description || "").toLowerCase().includes(q))) return false;
+        if (subject !== "all" && t.subjectId !== subject) return false;
+        if (priority !== "all" && t.priority !== priority) return false;
+        if (status === "pending" && t.completed) return false;
+        if (status === "completed" && !t.completed) return false;
+        if (status === "overdue" && !this.isOverdue(t)) return false;
+        return true;
+      });
+
+      const sorters = {
+        deadline: (a, b) => a.deadline.localeCompare(b.deadline),
+        priority: (a, b) => PRIORITY_WEIGHT[b.priority] - PRIORITY_WEIGHT[a.priority],
+        title: (a, b) => a.title.localeCompare(b.title),
+        created: (a, b) => b.createdAt - a.createdAt,
+        duration: (a, b) => b.hours - a.hours,
+      };
+      list = list.slice().sort(sorters[sort] || sorters.deadline);
+      // Completed tasks always sink to the bottom for readability.
+      return list.sort((a, b) => Number(a.completed) - Number(b.completed));
+    },
+    summary() {
+      const all = this.all();
+      const done = all.filter((t) => t.completed).length;
+      return {
+        total: all.length,
+        done,
+        pending: all.length - done,
+        overdue: all.filter((t) => this.isOverdue(t)).length,
+        pct: all.length ? Math.round((done / all.length) * 100) : 0,
+        hours: Math.round(all.reduce((s, t) => s + Number(t.hours || 0), 0) * 10) / 10,
+      };
+    },
+  };
+
+  /* ======================================================================
+     4. PLANNER — simulated AI scheduling (pure heuristics, no network)
+     ====================================================================== */
+  const Planner = {
+    /**
+     * Score = priority weight + urgency + overdue penalty + effort bonus.
+     * Higher score means "do this sooner".
+     */
+    score(task) {
+      const days = daysBetween(todayKey(), task.deadline);
+      let s = PRIORITY_WEIGHT[task.priority] * 12;
+      if (days < 0) s += 60 + Math.min(Math.abs(days), 10) * 4; // overdue dominates
+      else if (days === 0) s += 45;
+      else s += clamp(30 - days * 3, 0, 30);
+      s += clamp(Number(task.hours || 1), 0, 6); // longer work gets a nudge earlier
+      return Math.round(s);
+    },
+    ranked() {
+      return Tasks.all()
+        .filter((t) => !t.completed)
+        .map((t) => ({ task: t, score: this.score(t) }))
+        .sort((a, b) => b.score - a.score);
+    },
+    /** Build a time-boxed schedule for today, capped at the daily hour goal + buffer. */
+    schedule() {
+      const cap = clamp(Number(Store.state.goals.hours) || 3, 1, 12);
+      const ranked = this.ranked();
+      const slots = [];
+      let cursor = this.startHour();
+      let used = 0;
+
+      for (const { task, score } of ranked) {
+        if (used >= cap) break;
+        const block = Math.min(Number(task.hours || 1), Math.max(0.5, cap - used));
+        slots.push({
+          type: "study",
+          start: cursor,
+          end: cursor + block,
+          task,
+          score,
+          reason: this.reason(task),
+        });
+        used += block;
+        cursor += block;
+        if (used < cap) {
+          slots.push({ type: "break", start: cursor, end: cursor + 0.25 });
+          cursor += 0.25;
+        }
+      }
+      return { slots, used: Math.round(used * 10) / 10, cap };
+    },
+    startHour() {
+      const now = new Date();
+      const h = now.getHours() + (now.getMinutes() > 30 ? 1 : 0.5);
+      return clamp(Math.max(h, 8), 8, 21);
+    },
+    reason(task) {
+      const days = daysBetween(todayKey(), task.deadline);
+      if (days < 0) return `Overdue by ${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"}`;
+      if (days === 0) return "Due today";
+      if (task.priority === "High") return `High priority · due in ${days}d`;
+      return `Due in ${days} day${days === 1 ? "" : "s"}`;
+    },
+    pomodoros() {
+      const { slots } = this.schedule();
+      return slots
+        .filter((s) => s.type === "study")
+        .map((s) => ({
+          title: s.task.title,
+          sessions: Math.max(1, Math.round((s.end - s.start) / 0.5)),
+        }));
+    },
+    tips() {
+      const s = Tasks.summary();
+      const out = [];
+      if (s.total === 0) out.push("Add your first subject and task — the planner builds a schedule instantly.");
+      if (s.overdue > 0) out.push(`You have ${s.overdue} overdue task${s.overdue === 1 ? "" : "s"}. Clear the oldest one first to stop the snowball.`);
+      const high = Tasks.all().filter((t) => !t.completed && t.priority === "High").length;
+      if (high > 3) out.push("More than three High-priority tasks: consider demoting the least urgent to Medium.");
+      if (s.pct >= 70 && s.total > 0) out.push(`You're ${s.pct}% done overall — excellent pace, protect your streak today.`);
+      if (Store.state.streak.current >= 3) out.push(`${Store.state.streak.current}-day streak. Ten focused minutes keeps it alive.`);
+      out.push(TIP_POOL[new Date().getDate() % TIP_POOL.length]);
+      return out.slice(0, 4);
+    },
+  };
+
+  /* ======================================================================
+     5. UI — toasts, modals, routing, rendering
+     ====================================================================== */
+  const UI = {
+    /* --------------------------- toasts ------------------------------- */
+    toast(message, type = "info", ttl = 3200) {
+      const host = $("#toasts");
+      if (!host) return;
+      const el = document.createElement("div");
+      el.className = `toast toast--${type}`;
+      el.textContent = message;
+      host.appendChild(el);
+      setTimeout(() => {
+        el.classList.add("is-out");
+        setTimeout(() => el.remove(), 280);
+      }, ttl);
+    },
+
+    /* --------------------------- modals ------------------------------- */
+    openModal(id) {
+      const m = document.getElementById(id);
+      if (!m) return;
+      m.hidden = false;
+      this._lastFocus = document.activeElement;
+      const focusable = m.querySelector("input, select, textarea, button");
+      if (focusable) setTimeout(() => focusable.focus(), 40);
+    },
+    closeModal(id) {
+      const m = document.getElementById(id);
+      if (!m) return;
+      m.hidden = true;
+      if (this._lastFocus && this._lastFocus.focus) this._lastFocus.focus();
+    },
+    closeAllModals() { $$(".modal").forEach((m) => (m.hidden = true)); },
+
+    confirm(text, onOk) {
+      $("#confirmText").textContent = text;
+      this.openModal("confirmModal");
+      const btn = $("#confirmOk");
+      const clone = btn.cloneNode(true); // drop previous listeners
+      btn.replaceWith(clone);
+      clone.addEventListener("click", () => {
+        this.closeModal("confirmModal");
+        onOk();
+      });
+    },
+
+    /* --------------------------- routing ------------------------------ */
+    go(view) {
+      $$(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${view}`));
+      $$(".nav__link").forEach((b) => b.classList.toggle("is-active", b.dataset.view === view));
+      $("#primaryNav").classList.remove("is-open");
+      $("#navScrim").hidden = true;
+      $("#navToggle").setAttribute("aria-expanded", "false");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      if (view === "analytics") Analytics.render();
+      if (view === "calendar") Calendar.render();
+      if (view === "planner") UI.renderPlanner();
+      if (view === "focus") Focus.render();
+      if (view === "settings") SettingsUI.render();
+    },
+
+    /* -------------------------- fragments ----------------------------- */
+    empty(title, body) {
+      return `<li class="empty">
+        <svg viewBox="0 0 200 130" aria-hidden="true">
+          <rect x="26" y="26" width="148" height="86" rx="14" fill="none" stroke="currentColor" stroke-width="3" opacity=".45"/>
+          <path d="M48 58h72M48 76h52" stroke="currentColor" stroke-width="6" stroke-linecap="round" opacity=".35"/>
+          <circle cx="152" cy="94" r="17" fill="none" stroke="currentColor" stroke-width="3"/>
+          <path d="M152 86v16M144 94h16" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <strong>${esc(title)}</strong>
+        <p>${esc(body)}</p>
+      </li>`;
+    },
+
+    taskItem(task) {
+      const subject = Subjects.byId(task.subjectId);
+      const overdue = Tasks.isOverdue(task);
+      const days = daysBetween(todayKey(), task.deadline);
+      const when = overdue
+        ? `Overdue ${Math.abs(days)}d`
+        : days === 0
+          ? "Due today"
+          : days === 1
+            ? "Due tomorrow"
+            : fmtDate(task.deadline);
+      return `<li class="task ${task.completed ? "is-done" : ""} ${overdue ? "is-overdue" : ""}" data-id="${task.id}">
+        <button class="task__check" data-act="toggle" aria-label="${task.completed ? "Mark as pending" : "Mark as complete"}" aria-pressed="${task.completed}">
+          <svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>
+        </button>
+        <div class="task__body">
+          <div class="task__title">${esc(task.title)}</div>
+          ${task.description ? `<p class="task__desc">${esc(task.description)}</p>` : ""}
+          <div class="task__meta">
+            <span class="tag tag--subject"><i class="tag__dot" style="background:${esc(subject ? subject.color : "#7c5cff")}"></i>${esc(subject ? subject.name : "No subject")}</span>
+            <span class="tag tag--${esc(task.priority)}">${esc(task.priority)}</span>
+            <span class="tag ${overdue ? "tag--danger" : ""}">${esc(when)}</span>
+            <span class="tag">${esc(task.hours)}h</span>
+          </div>
+        </div>
+        <div class="task__actions">
+          <button class="mini-btn" data-act="edit" aria-label="Edit ${esc(task.title)}"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg></button>
+          <button class="mini-btn mini-btn--danger" data-act="delete" aria-label="Delete ${esc(task.title)}"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg></button>
+        </div>
+      </li>`;
+    },
+
+    /* --------------------------- renderers ---------------------------- */
+    renderAll() {
+      this.renderDashboard();
+      this.renderSubjects();
+      this.renderTasks();
+      this.renderPlanner();
+      Calendar.render();
+      Analytics.render();
+      Focus.render();
+      SettingsUI.render();
+      this.syncSubjectSelects();
+    },
+
+    renderDashboard() {
+      const s = Tasks.summary();
+      $("#statTotal").textContent = s.total;
+      $("#statDone").textContent = s.done;
+      $("#statPending").textContent = s.pending;
+      $("#statOverdue").textContent = s.overdue;
+      $("#statStreak").textContent = Store.state.streak.current;
+      $("#progressPct").textContent = `${s.pct}%`;
+
+      const ring = $("#progressRing");
+      const circumference = 2 * Math.PI * 52;
+      ring.style.strokeDasharray = String(circumference);
+      ring.style.strokeDashoffset = String(circumference * (1 - s.pct / 100));
+
+      // Today's tasks
+      const today = Tasks.all()
+        .filter((t) => Tasks.isToday(t) || Tasks.isOverdue(t))
+        .sort((a, b) => Planner.score(b) - Planner.score(a));
+      $("#todayCount").textContent = today.length;
+      $("#todayList").innerHTML = today.length
+        ? today.map((t) => this.taskItem(t)).join("")
+        : this.empty("Nothing due today", "Enjoy the breathing room, or pull a task forward from the planner.");
+
+      // Upcoming deadlines
+      const upcoming = Tasks.all()
+        .filter((t) => !t.completed && daysBetween(todayKey(), t.deadline) > 0)
+        .sort((a, b) => a.deadline.localeCompare(b.deadline))
+        .slice(0, 6);
+      $("#deadlineCount").textContent = upcoming.length;
+      $("#deadlineList").innerHTML = upcoming.length
+        ? upcoming
+            .map((t) => {
+              const d = new Date(`${t.deadline}T00:00:00`);
+              const subject = Subjects.byId(t.subjectId);
+              const left = daysBetween(todayKey(), t.deadline);
+              return `<li class="deadline">
+                <div class="deadline__date"><b>${d.getDate()}</b><span>${d.toLocaleString(undefined, { month: "short" })}</span></div>
+                <div class="deadline__info">
+                  <div class="deadline__title">${esc(t.title)}</div>
+                  <div class="deadline__sub">${esc(subject ? subject.name : "No subject")} · ${esc(t.priority)}</div>
+                </div>
+                <div class="deadline__left">in ${left}d</div>
+              </li>`;
+            })
+            .join("")
+        : `<li class="empty"><strong>No upcoming deadlines</strong><p>Add tasks with due dates to see them here.</p></li>`;
+
+      // Greeting + quote
+      const h = new Date().getHours();
+      $("#greeting").textContent = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : h < 21 ? "Good evening" : "Burning the midnight oil";
+      $("#dailyQuote").textContent = `"${QUOTES[new Date().getDate() % QUOTES.length]}"`;
+    },
+
+    renderSubjects() {
+      const term = $("#subjectSearch").value;
+      const list = Subjects.search(term);
+      const host = $("#subjectGrid");
+      if (!list.length) {
+        host.innerHTML = `<div class="panel glass"><ul>${this.empty(
+          term ? "No matching subjects" : "No subjects yet",
+          term ? "Try a different search term." : "Create a subject to start organising your tasks."
+        )}</ul></div>`;
+        return;
+      }
+      host.innerHTML = list
+        .map((s) => {
+          const st = Subjects.stats(s.id);
+          return `<article class="subject-card" style="--sc-color:${esc(s.color)}" data-id="${s.id}">
+            <div class="subject-card__top">
+              <div>
+                <div class="subject-card__name">${esc(s.name)}</div>
+                <div class="subject-card__desc">${esc(s.description || "—")}</div>
+              </div>
+              <div class="task__actions">
+                <button class="mini-btn" data-act="edit-subject" aria-label="Edit ${esc(s.name)}"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg></button>
+                <button class="mini-btn mini-btn--danger" data-act="delete-subject" aria-label="Delete ${esc(s.name)}"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg></button>
+              </div>
+            </div>
+            <div class="subject-card__stats"><span>${st.done}/${st.total} done</span><span>${st.hours}h planned</span><span>${st.pct}%</span></div>
+            <div class="bar"><i style="width:${st.pct}%"></i></div>
+          </article>`;
+        })
+        .join("");
+    },
+
+    renderTasks() {
+      const list = Tasks.query({
+        search: $("#taskSearch").value,
+        subject: $("#filterSubject").value,
+        status: $("#filterStatus").value,
+        priority: $("#filterPriority").value,
+        sort: $("#sortBy").value,
+      });
+      $("#taskList").innerHTML = list.length
+        ? list.map((t) => this.taskItem(t)).join("")
+        : this.empty("No tasks match", "Adjust your filters, or add a new task to get going.");
+    },
+
+    renderPlanner() {
+      const { slots, used } = Planner.schedule();
+      $("#planLoad").textContent = `${used}h`;
+      const fmtH = (v) => {
+        const hh = Math.floor(v) % 24;
+        const mm = Math.round((v % 1) * 60);
+        return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+      };
+      $("#scheduleList").innerHTML = slots.length
+        ? slots
+            .map((s) =>
+              s.type === "break"
+                ? `<li class="slot slot--break"><div class="slot__time">${fmtH(s.start)}</div><div><div class="slot__title">Short break</div><div class="slot__sub">Stretch, water, look away from the screen.</div></div></li>`
+                : `<li class="slot"><div class="slot__time">${fmtH(s.start)}–${fmtH(s.end)}</div><div><div class="slot__title">${esc(s.task.title)}</div><div class="slot__sub">${esc(s.reason)} · score ${s.score}</div></div></li>`
+            )
+            .join("")
+        : this.empty("Nothing to schedule", "All caught up! Add pending tasks and regenerate the plan.");
+
+      const pomos = Planner.pomodoros();
+      $("#pomodoroSuggestions").innerHTML = pomos.length
+        ? pomos.map((p) => `<div class="pomo-chip"><span>${esc(p.title)}</span><strong>${p.sessions} × 25min</strong></div>`).join("")
+        : `<p class="muted">No sessions suggested — add pending tasks first.</p>`;
+
+      $("#planTips").innerHTML = Planner.tips().map((t) => `<li>${esc(t)}</li>`).join("");
+
+      const ranked = Planner.ranked();
+      $("#rankedList").innerHTML = ranked.length
+        ? ranked.map(({ task }) => this.taskItem(task)).join("")
+        : this.empty("Queue is clear", "Every task is complete. Take the win.");
+    },
+
+    syncSubjectSelects() {
+      const subs = Subjects.all();
+      const options = subs.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+      const filter = $("#filterSubject");
+      const prev = filter.value;
+      filter.innerHTML = `<option value="all">All subjects</option>${options}`;
+      filter.value = subs.some((s) => s.id === prev) || prev === "all" ? prev : "all";
+      $("#taskSubject").innerHTML = subs.length ? options : `<option value="">Create a subject first</option>`;
+    },
+  };
+
+  /* ======================================================================
+     6. CALENDAR
+     ====================================================================== */
+  const Calendar = {
+    cursor: new Date(),
+    selected: todayKey(),
+    render() {
+      const view = new Date(this.cursor.getFullYear(), this.cursor.getMonth(), 1);
+      $("#calLabel").textContent = view.toLocaleString(undefined, { month: "long", year: "numeric" });
+
+      // Monday-first offset
+      const firstDay = (view.getDay() + 6) % 7;
+      const start = new Date(view);
+      start.setDate(start.getDate() - firstDay);
+
+      const byDay = {};
+      Tasks.all().forEach((t) => {
+        (byDay[t.deadline] = byDay[t.deadline] || []).push(t);
+      });
+
+      let html = "";
+      for (let i = 0; i < 42; i++) {
+        const d = new Date(start);
+        d.setDate(start.getDate() + i);
+        const key = dateKey(d);
+        const inMonth = d.getMonth() === view.getMonth();
+        const items = byDay[key] || [];
+        const dots = items
+          .slice(0, 4)
+          .map((t) => {
+            const s = Subjects.byId(t.subjectId);
+            return `<i class="cal-dot" style="background:${esc(s ? s.color : "#7c5cff")};opacity:${t.completed ? 0.35 : 1}"></i>`;
+          })
+          .join("");
+        html += `<button type="button" role="gridcell" class="cal-cell ${inMonth ? "" : "is-muted"} ${key === todayKey() ? "is-today" : ""} ${key === this.selected ? "is-selected" : ""}"
+          data-date="${key}" aria-label="${fmtDate(key)}, ${items.length} task${items.length === 1 ? "" : "s"}">
+          <span class="cal-cell__n">${d.getDate()}</span>
+          <span class="cal-dots">${dots}</span>
+          ${items.length > 4 ? `<span class="cal-cell__more">+${items.length - 4}</span>` : ""}
+        </button>`;
+      }
+      $("#calGrid").innerHTML = html;
+      this.renderDay();
+    },
+    renderDay() {
+      $("#dayLabel").textContent = fmtDate(this.selected);
+      const items = Tasks.all().filter((t) => t.deadline === this.selected);
+      $("#dayTasks").innerHTML = items.length
+        ? items.map((t) => UI.taskItem(t)).join("")
+        : UI.empty("No tasks on this day", "Pick another date, or add a task with this deadline.");
+    },
+  };
+
+  /* ======================================================================
+     7. ANALYTICS
+     ====================================================================== */
+  const Analytics = {
+    render() {
+      const s = Tasks.summary();
+      $("#anaPct").textContent = `${s.pct}%`;
+      $("#anaDone").textContent = s.done;
+      $("#anaPending").textContent = s.pending;
+      $("#anaHours").textContent = `${s.hours}h`;
+
+      $("#subjectProgress").innerHTML = Subjects.all().length
+        ? Subjects.all()
+            .map((sub) => {
+              const st = Subjects.stats(sub.id);
+              return `<div class="sp-row" style="--sc-color:${esc(sub.color)}">
+                <div class="sp-row__top"><span>${esc(sub.name)}</span><span>${st.pct}%</span></div>
+                <div class="bar"><i style="width:${st.pct}%"></i></div>
+              </div>`;
+            })
+            .join("")
+        : `<p class="muted">Add subjects to see per-subject progress.</p>`;
+
+      this.chart();
+    },
+    weekData() {
+      const out = [];
+      const now = new Date();
+      const monday = new Date(now);
+      monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(monday);
+        d.setDate(monday.getDate() + i);
+        const key = dateKey(d);
+        out.push({
+          label: d.toLocaleDateString(undefined, { weekday: "short" }).slice(0, 3),
+          value: Number(Store.state.history[key] || 0),
+          isToday: key === todayKey(),
+        });
+      }
+      return out;
+    },
+    chart() {
+      const canvas = $("#weekChart");
+      if (!canvas || !canvas.getContext) return;
+      const data = this.weekData();
+      const total = Math.round(data.reduce((a, b) => a + b.value, 0) * 10) / 10;
+      $("#weekTotal").textContent = `${total}h`;
+
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth || 640;
+      const cssH = 280;
+      canvas.width = cssW * dpr;
+      canvas.height = cssH * dpr;
+      canvas.style.height = `${cssH}px`;
+
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssW, cssH);
+
+      const styles = getComputedStyle(document.body);
+      const muted = styles.getPropertyValue("--text-muted").trim() || "#8b93b2";
+      const grid = styles.getPropertyValue("--ring-track").trim() || "rgba(255,255,255,.1)";
+
+      const padL = 34;
+      const padB = 34;
+      const padT = 16;
+      const chartW = cssW - padL - 12;
+      const chartH = cssH - padB - padT;
+      const max = Math.max(2, Math.ceil(Math.max(...data.map((d) => d.value)) || 2));
+
+      // grid lines + y labels
+      ctx.font = "11px Manrope, sans-serif";
+      ctx.fillStyle = muted;
+      ctx.strokeStyle = grid;
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padT + (chartH / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(padL + chartW, y);
+        ctx.stroke();
+        ctx.textAlign = "right";
+        ctx.fillText(String(Math.round(max - (max / 4) * i)), padL - 8, y + 4);
+      }
+
+      // bars
+      const slot = chartW / data.length;
+      const barW = Math.min(38, slot * 0.55);
+      data.forEach((d, i) => {
+        const x = padL + slot * i + (slot - barW) / 2;
+        const h = (d.value / max) * chartH;
+        const y = padT + chartH - h;
+        const g = ctx.createLinearGradient(0, y, 0, padT + chartH);
+        g.addColorStop(0, d.isToday ? "#22d3ee" : "#7c5cff");
+        g.addColorStop(1, d.isToday ? "#7c5cff" : "#f472b6");
+        ctx.fillStyle = g;
+        const r = Math.min(8, barW / 2, Math.max(0, h));
+        ctx.beginPath();
+        ctx.moveTo(x, padT + chartH);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.lineTo(x + barW - r, y);
+        ctx.quadraticCurveTo(x + barW, y, x + barW, y + r);
+        ctx.lineTo(x + barW, padT + chartH);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = muted;
+        ctx.textAlign = "center";
+        ctx.fillText(d.label, x + barW / 2, cssH - 12);
+        if (d.value > 0) {
+          ctx.fillText(`${d.value}h`, x + barW / 2, y - 6);
+        }
+      });
+    },
+  };
+
+  /* ======================================================================
+     8. FOCUS — Pomodoro, countdowns, goals
+     ====================================================================== */
+  const Focus = {
+    WORK: 25 * 60,
+    BREAK: 5 * 60,
+    mode: "Focus",
+    remaining: 25 * 60,
+    timer: null,
+
+    render() {
+      this.rollDay();
+      $("#pomoCount").textContent = Store.state.pomodoro.count;
+      $("#goalTasks").value = Store.state.goals.tasks;
+      $("#goalHours").value = Store.state.goals.hours;
+      this.paint();
+      this.renderCountdowns();
+      this.renderGoals();
+    },
+    rollDay() {
+      const p = Store.state.pomodoro;
+      if (p.date !== todayKey()) {
+        p.date = todayKey();
+        p.count = 0;
+        Store.save();
+      }
+    },
+    paint() {
+      const total = this.mode === "Focus" ? this.WORK : this.BREAK;
+      const mm = String(Math.floor(this.remaining / 60)).padStart(2, "0");
+      const ss = String(this.remaining % 60).padStart(2, "0");
+      $("#pomoTime").textContent = `${mm}:${ss}`;
+      $("#pomoMode").textContent = this.mode;
+      const c = 2 * Math.PI * 88;
+      $("#pomoRing").style.strokeDasharray = String(c);
+      $("#pomoRing").style.strokeDashoffset = String(c * (1 - this.remaining / total));
+      document.title = this.timer ? `${mm}:${ss} · ${this.mode} — AI Study Planner` : "AI Study Planner — Smart Dashboard for Students";
+    },
+    start() {
+      if (this.timer) return;
+      this.timer = setInterval(() => {
+        this.remaining -= 1;
+        if (this.remaining <= 0) this.complete();
+        this.paint();
+      }, 1000);
+      UI.toast(`${this.mode} session started.`, "success");
+      this.paint();
+    },
+    pause() {
+      clearInterval(this.timer);
+      this.timer = null;
+      this.paint();
+      UI.toast("Timer paused.", "warn");
+    },
+    reset() {
+      clearInterval(this.timer);
+      this.timer = null;
+      this.remaining = this.mode === "Focus" ? this.WORK : this.BREAK;
+      this.paint();
+    },
+    complete() {
+      clearInterval(this.timer);
+      this.timer = null;
+      if (this.mode === "Focus") {
+        Store.state.pomodoro.count += 1;
+        Store.save();
+        $("#pomoCount").textContent = Store.state.pomodoro.count;
+        this.mode = "Break";
+        this.remaining = this.BREAK;
+        UI.toast("Focus session done — take a 5 minute break.", "success", 5000);
+      } else {
+        this.mode = "Focus";
+        this.remaining = this.WORK;
+        UI.toast("Break over. Ready for the next block?", "info", 5000);
+      }
+      this.paint();
+    },
+    renderCountdowns() {
+      const list = Tasks.all()
+        .filter((t) => !t.completed)
+        .sort((a, b) => a.deadline.localeCompare(b.deadline))
+        .slice(0, 5);
+      $("#countdowns").innerHTML = list.length
+        ? list
+            .map((t) => {
+              const ms = new Date(`${t.deadline}T23:59:59`) - new Date();
+              const late = ms < 0;
+              const abs = Math.abs(ms);
+              const d = Math.floor(abs / 86400000);
+              const h = Math.floor((abs % 86400000) / 3600000);
+              const m = Math.floor((abs % 3600000) / 60000);
+              return `<div class="countdown"><span>${esc(t.title)}</span>
+                <span class="countdown__time ${late ? "is-late" : ""}">${late ? "-" : ""}${d}d ${h}h ${m}m</span></div>`;
+            })
+            .join("")
+        : `<p class="muted">No pending deadlines. Beautiful.</p>`;
+    },
+    renderGoals() {
+      const goals = Store.state.goals;
+      const doneToday = Tasks.all().filter(
+        (t) => t.completed && t.completedAt && dateKey(new Date(t.completedAt)) === todayKey()
+      ).length;
+      const hoursToday = Number(Store.state.history[todayKey()] || 0);
+      const row = (label, value, target, unit) => {
+        const pct = clamp(Math.round((value / (target || 1)) * 100), 0, 100);
+        return `<div class="sp-row" style="--sc-color:var(--brand-2)">
+          <div class="sp-row__top"><span>${label}</span><span>${value}${unit} / ${target}${unit}</span></div>
+          <div class="bar"><i style="width:${pct}%"></i></div>
+        </div>`;
+      };
+      $("#goalProgress").innerHTML =
+        row("Tasks completed", doneToday, goals.tasks, "") + row("Study hours logged", hoursToday, goals.hours, "h");
+    },
+  };
+
+  /* ======================================================================
+     9. SETTINGS
+     ====================================================================== */
+  const SettingsUI = {
+    applyTheme(theme) {
+      document.documentElement.dataset.theme = theme;
+      Store.state.settings.theme = theme;
+      Store.save();
+      $$(".theme-opt").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.themeSet === theme)));
+      Analytics.chart();
+    },
+    applyMotion(reduced) {
+      document.documentElement.dataset.motion = reduced ? "reduced" : "full";
+      Store.state.settings.reducedMotion = reduced;
+      Store.save();
+    },
+    render() {
+      $$(".theme-opt").forEach((b) =>
+        b.setAttribute("aria-checked", String(b.dataset.themeSet === Store.state.settings.theme))
+      );
+      $("#motionToggle").checked = !!Store.state.settings.reducedMotion;
+      $("#metaSubjects").textContent = Subjects.all().length;
+      $("#metaTasks").textContent = Tasks.all().length;
+      $("#metaSize").textContent = `${(Store.bytes() / 1024).toFixed(1)} KB`;
+    },
+    exportJSON() {
+      try {
+        const blob = new Blob([JSON.stringify(Store.state, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `ai-study-planner-${todayKey()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        UI.toast("Backup exported.", "success");
+      } catch (err) {
+        console.error(err);
+        UI.toast("Export failed.", "error");
+      }
+    },
+    importJSON(file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const data = JSON.parse(String(reader.result));
+          if (!data || !Array.isArray(data.tasks) || !Array.isArray(data.subjects)) {
+            throw new Error("Unexpected file shape");
+          }
+          Store.replace(data);
+          this.applyTheme(Store.state.settings.theme || "dark");
+          UI.renderAll();
+          UI.toast("Backup imported successfully.", "success");
+        } catch (err) {
+          console.error(err);
+          UI.toast("That file isn't a valid planner backup.", "error");
+        }
+      };
+      reader.onerror = () => UI.toast("Could not read the file.", "error");
+      reader.readAsText(file);
+    },
+  };
+
+  /* ======================================================================
+     10. FORMS
+     ====================================================================== */
+  const Forms = {
+    selectedColor: PALETTE[0],
+
+    openTask(id) {
+      if (!Subjects.all().length) {
+        UI.toast("Create a subject before adding tasks.", "warn");
+        this.openSubject();
+        return;
+      }
+      UI.syncSubjectSelects();
+      $$("[data-err]").forEach((e) => (e.textContent = ""));
+      const t = id ? Tasks.byId(id) : null;
+      $("#taskModalTitle").textContent = t ? "Edit task" : "New task";
+      $("#taskId").value = t ? t.id : "";
+      $("#taskTitle").value = t ? t.title : "";
+      $("#taskSubject").value = t ? t.subjectId : Subjects.all()[0].id;
+      $("#taskDesc").value = t ? t.description : "";
+      $("#taskDeadline").value = t ? t.deadline : todayKey();
+      $("#taskPriority").value = t ? t.priority : "Medium";
+      $("#taskHours").value = t ? t.hours : 1;
+      $("#taskDone").checked = t ? t.completed : false;
+      UI.openModal("taskModal");
+    },
+
+    submitTask(e) {
+      e.preventDefault();
+      const title = $("#taskTitle").value.trim();
+      const subjectId = $("#taskSubject").value;
+      const deadline = $("#taskDeadline").value;
+      let ok = true;
+      $$("[data-err]").forEach((el) => (el.textContent = ""));
+      if (!title) { $('[data-err="taskTitle"]').textContent = "Give the task a title."; ok = false; }
+      if (!subjectId) { $('[data-err="taskSubject"]').textContent = "Pick a subject."; ok = false; }
+      if (!deadline) { $('[data-err="taskDeadline"]').textContent = "Choose a deadline."; ok = false; }
+      if (!ok) return;
+
+      const payload = {
+        title,
+        subjectId,
+        deadline,
+        description: $("#taskDesc").value,
+        priority: $("#taskPriority").value,
+        hours: clamp(Number($("#taskHours").value) || 1, 0.5, 12),
+        completed: $("#taskDone").checked,
+      };
+      const id = $("#taskId").value;
+      if (id) {
+        Tasks.update(id, payload);
+        UI.toast("Task updated.", "success");
+      } else {
+        Tasks.create(payload);
+        UI.toast("Task added.", "success");
+      }
+      UI.closeModal("taskModal");
+      UI.renderAll();
+    },
+
+    openSubject(id) {
+      $$("[data-err]").forEach((e) => (e.textContent = ""));
+      const s = id ? Subjects.byId(id) : null;
+      $("#subjectModalTitle").textContent = s ? "Edit subject" : "New subject";
+      $("#subjectId").value = s ? s.id : "";
+      $("#subjectName").value = s ? s.name : "";
+      $("#subjectDesc").value = s ? s.description : "";
+      this.selectedColor = s ? s.color : Subjects.nextColor();
+      $("#colorSwatches").innerHTML = PALETTE.map(
+        (c) => `<button type="button" class="swatch ${c === this.selectedColor ? "is-selected" : ""}" data-color="${c}" style="background:${c}" aria-label="Colour ${c}"></button>`
+      ).join("");
+      UI.openModal("subjectModal");
+    },
+
+    submitSubject(e) {
+      e.preventDefault();
+      const name = $("#subjectName").value.trim();
+      $$("[data-err]").forEach((el) => (el.textContent = ""));
+      if (!name) {
+        $('[data-err="subjectName"]').textContent = "Give the subject a name.";
+        return;
+      }
+      const payload = { name, description: $("#subjectDesc").value, color: this.selectedColor };
+      const id = $("#subjectId").value;
+      if (id) {
+        Subjects.update(id, payload);
+        UI.toast("Subject updated.", "success");
+      } else {
+        Subjects.create(payload);
+        UI.toast("Subject added.", "success");
+      }
+      UI.closeModal("subjectModal");
+      UI.renderAll();
+    },
+  };
+
+  /* ======================================================================
+     11. SEED DATA (first run only)
+     ====================================================================== */
+  function seed() {
+    if (Store.state.seeded || Store.state.subjects.length || Store.state.tasks.length) return;
+    const offset = (n) => {
+      const d = new Date();
+      d.setDate(d.getDate() + n);
+      return dateKey(d);
+    };
+    const ds = Subjects.create({ name: "Data Structures", description: "Semester core paper", color: PALETTE[0] });
+    const dbms = Subjects.create({ name: "DBMS", description: "Normalization & SQL", color: PALETTE[1] });
+    const apt = Subjects.create({ name: "Aptitude", description: "Placement preparation", color: PALETTE[2] });
+
+    Tasks.create({ subjectId: ds.id, title: "Revise binary trees & traversals", description: "Inorder, preorder, postorder + practice problems.", deadline: offset(0), priority: "High", hours: 2 });
+    Tasks.create({ subjectId: ds.id, title: "Solve 10 linked-list problems", description: "Focus on reversal and cycle detection.", deadline: offset(2), priority: "Medium", hours: 1.5 });
+    Tasks.create({ subjectId: dbms.id, title: "Normalization assignment", description: "1NF to BCNF with examples.", deadline: offset(-1), priority: "High", hours: 1 });
+    Tasks.create({ subjectId: dbms.id, title: "Practice SQL joins", description: "Inner, outer, self joins.", deadline: offset(4), priority: "Low", hours: 1 });
+    Tasks.create({ subjectId: apt.id, title: "Time & work — 30 questions", description: "Timed mock set.", deadline: offset(1), priority: "Medium", hours: 1 });
+    Tasks.create({ subjectId: apt.id, title: "Percentages revision", description: "Formula sheet + 20 questions.", deadline: offset(3), priority: "Low", hours: 0.5, completed: true });
+
+    Store.state.seeded = true;
+    Store.save();
+  }
+
+  /* ======================================================================
+     12. EVENT WIRING
+     ====================================================================== */
+  function wire() {
+    // Navigation ---------------------------------------------------------
+    $$(".nav__link").forEach((btn) => btn.addEventListener("click", () => UI.go(btn.dataset.view)));
+    $("#navToggle").addEventListener("click", () => {
+      const nav = $("#primaryNav");
+      const open = nav.classList.toggle("is-open");
+      $("#navToggle").setAttribute("aria-expanded", String(open));
+      $("#navScrim").hidden = !open;
+    });
+    $("#navScrim").addEventListener("click", () => {
+      $("#primaryNav").classList.remove("is-open");
+      $("#navScrim").hidden = true;
+      $("#navToggle").setAttribute("aria-expanded", "false");
+    });
+
+    // Theme --------------------------------------------------------------
+    $("#themeToggle").addEventListener("click", () =>
+      SettingsUI.applyTheme(Store.state.settings.theme === "dark" ? "light" : "dark")
+    );
+    $$(".theme-opt").forEach((b) => b.addEventListener("click", () => SettingsUI.applyTheme(b.dataset.themeSet)));
+    $("#motionToggle").addEventListener("change", (e) => SettingsUI.applyMotion(e.target.checked));
+
+    // Create -------------------------------------------------------------
+    $("#quickAddTask").addEventListener("click", () => Forms.openTask());
+    $("#addTaskBtn").addEventListener("click", () => Forms.openTask());
+    $("#addSubjectBtn").addEventListener("click", () => Forms.openSubject());
+    $("#taskForm").addEventListener("submit", (e) => Forms.submitTask(e));
+    $("#subjectForm").addEventListener("submit", (e) => Forms.submitSubject(e));
+    $("#colorSwatches").addEventListener("click", (e) => {
+      const sw = e.target.closest(".swatch");
+      if (!sw) return;
+      Forms.selectedColor = sw.dataset.color;
+      $$("#colorSwatches .swatch").forEach((s) => s.classList.toggle("is-selected", s === sw));
+    });
+
+    // Modal closers ------------------------------------------------------
+    $$("[data-close]").forEach((b) => b.addEventListener("click", () => UI.closeAllModals()));
+    $$(".modal").forEach((m) =>
+      m.addEventListener("click", (e) => { if (e.target === m) UI.closeAllModals(); })
+    );
+
+    // Task list delegation (works for every list that renders .task) -----
+    document.addEventListener("click", (e) => {
+      const actionBtn = e.target.closest("[data-act]");
+      if (!actionBtn) return;
+      const act = actionBtn.dataset.act;
+
+      const taskEl = actionBtn.closest(".task");
+      if (taskEl) {
+        const id = taskEl.dataset.id;
+        if (act === "toggle") {
+          const t = Tasks.toggle(id);
+          UI.toast(t.completed ? "Nice work — task completed!" : "Task reopened.", t.completed ? "success" : "info");
+          UI.renderAll();
+        } else if (act === "edit") {
+          Forms.openTask(id);
+        } else if (act === "delete") {
+          const t = Tasks.byId(id);
+          UI.confirm(`Delete "${t ? t.title : "this task"}"? This cannot be undone.`, () => {
+            Tasks.remove(id);
+            UI.toast("Task deleted.", "warn");
+            UI.renderAll();
+          });
+        }
+        return;
+      }
+
+      const subEl = actionBtn.closest(".subject-card");
+      if (subEl) {
+        const id = subEl.dataset.id;
+        if (act === "edit-subject") Forms.openSubject(id);
+        if (act === "delete-subject") {
+          const s = Subjects.byId(id);
+          UI.confirm(`Delete "${s ? s.name : "this subject"}" and all of its tasks?`, () => {
+            Subjects.remove(id);
+            UI.toast("Subject deleted.", "warn");
+            UI.renderAll();
+          });
+        }
+      }
+    });
+
+    // Search / filters ---------------------------------------------------
+    $("#subjectSearch").addEventListener("input", debounce(() => UI.renderSubjects(), 160));
+    $("#taskSearch").addEventListener("input", debounce(() => UI.renderTasks(), 160));
+    ["#filterSubject", "#filterStatus", "#filterPriority", "#sortBy"].forEach((sel) =>
+      $(sel).addEventListener("change", () => UI.renderTasks())
+    );
+
+    // Quick actions ------------------------------------------------------
+    $$(".qa").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const map = {
+          "add-task": () => Forms.openTask(),
+          "add-subject": () => Forms.openSubject(),
+          "generate-plan": () => { UI.go("planner"); UI.renderPlanner(); UI.toast("Plan regenerated.", "success"); },
+          "start-pomodoro": () => { UI.go("focus"); Focus.start(); },
+          "view-analytics": () => UI.go("analytics"),
+          export: () => SettingsUI.exportJSON(),
+        };
+        (map[btn.dataset.action] || (() => {}))();
+      })
+    );
+
+    // Planner ------------------------------------------------------------
+    $("#regeneratePlan").addEventListener("click", () => {
+      UI.renderPlanner();
+      UI.toast("Schedule rebuilt from your current tasks.", "success");
+    });
+
+    // Calendar -----------------------------------------------------------
+    $("#calPrev").addEventListener("click", () => { Calendar.cursor.setMonth(Calendar.cursor.getMonth() - 1); Calendar.render(); });
+    $("#calNext").addEventListener("click", () => { Calendar.cursor.setMonth(Calendar.cursor.getMonth() + 1); Calendar.render(); });
+    $("#calToday").addEventListener("click", () => { Calendar.cursor = new Date(); Calendar.selected = todayKey(); Calendar.render(); });
+    $("#calGrid").addEventListener("click", (e) => {
+      const cell = e.target.closest(".cal-cell");
+      if (!cell) return;
+      Calendar.selected = cell.dataset.date;
+      Calendar.render();
+    });
+
+    // Focus --------------------------------------------------------------
+    $("#pomoStart").addEventListener("click", () => Focus.start());
+    $("#pomoPause").addEventListener("click", () => Focus.pause());
+    $("#pomoReset").addEventListener("click", () => Focus.reset());
+    $("#goalForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      Store.state.goals = {
+        tasks: clamp(Number($("#goalTasks").value) || 3, 1, 20),
+        hours: clamp(Number($("#goalHours").value) || 3, 1, 16),
+      };
+      Store.save();
+      Focus.renderGoals();
+      UI.renderPlanner();
+      UI.toast("Daily goals saved.", "success");
+    });
+
+    // Settings -----------------------------------------------------------
+    $("#exportBtn").addEventListener("click", () => SettingsUI.exportJSON());
+    $("#importBtn").addEventListener("click", () => $("#importFile").click());
+    $("#importFile").addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (file) SettingsUI.importJSON(file);
+      e.target.value = "";
+    });
+    $("#clearBtn").addEventListener("click", () =>
+      UI.confirm("Erase every subject, task and setting stored in this browser?", () => {
+        Store.reset();
+        SettingsUI.applyTheme("dark");
+        UI.renderAll();
+        UI.toast("All data cleared.", "warn");
+      })
+    );
+
+    // Keyboard shortcuts -------------------------------------------------
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { UI.closeAllModals(); return; }
+      const tag = (e.target.tagName || "").toLowerCase();
+      if (["input", "textarea", "select"].includes(tag) || e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "n") { e.preventDefault(); Forms.openTask(); }
+      else if (k === "s") { e.preventDefault(); Forms.openSubject(); }
+      else if (k === "t") { SettingsUI.applyTheme(Store.state.settings.theme === "dark" ? "light" : "dark"); }
+      else if (k === "g") { UI.go("planner"); UI.renderPlanner(); }
+      else if (k === "p") { Focus.timer ? Focus.pause() : Focus.start(); }
+      else if (k === "/") {
+        e.preventDefault();
+        const active = $(".view.is-active");
+        const input = active ? active.querySelector('input[type="search"]') : null;
+        (input || $("#taskSearch")).focus();
+        if (!input) UI.go("tasks");
+      }
+    });
+
+    window.addEventListener("resize", debounce(() => Analytics.chart(), 200));
+    window.addEventListener("error", (e) => console.error("Runtime error:", e.message));
+  }
+
+  /* ======================================================================
+     13. CLOCK
+     ====================================================================== */
+  function startClock() {
+    const tick = () => {
+      const now = new Date();
+      $("#liveClock").textContent = now.toLocaleTimeString(undefined, { hour12: false });
+      $("#liveDate").textContent = now.toLocaleDateString(undefined, {
+        weekday: "long", day: "numeric", month: "long", year: "numeric",
+      });
+    };
+    tick();
+    setInterval(tick, 1000);
+    setInterval(() => { if ($("#view-focus").classList.contains("is-active")) Focus.renderCountdowns(); }, 30000);
+  }
+
+  /* ======================================================================
+     14. BOOT
+     ====================================================================== */
+  function init() {
+    Store.load();
+    seed();
+    SettingsUI.applyTheme(Store.state.settings.theme || "dark");
+    SettingsUI.applyMotion(!!Store.state.settings.reducedMotion);
+    wire();
+    UI.renderAll();
+    startClock();
+
+    const loader = $("#loader");
+    setTimeout(() => {
+      loader.classList.add("is-hidden");
+      setTimeout(() => (loader.style.display = "none"), 450);
+    }, 550);
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+
+  // Expose for debugging / console use.
+  window.StudyPlanner = { Store, Subjects, Tasks, Planner, Calendar, Analytics, Focus, UI };
+})();
